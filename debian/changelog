@@ -1,0 +1,26 @@
+golang-golang-x-mod (0.4.1-1) unstable; urgency=medium
+
+  * Team upload.
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Repository, Repository-Browse.
+
+  [ Shengjing Zhu ]
+  * New upstream release
+  * Update Section to golang
+  * Bump debhelper-compat to 13
+  * Update Standards-Version to 4.5.1 (no changes)
+
+ -- Shengjing Zhu <zhsj@debian.org>  Wed, 27 Jan 2021 02:07:49 +0800
+
+golang-golang-x-mod (0.2.0-2) unstable; urgency=medium
+
+  * Source-only upload for migration to testing
+
+ -- Anthony Fok <foka@debian.org>  Sat, 07 Mar 2020 22:41:02 -0700
+
+golang-golang-x-mod (0.2.0-1) unstable; urgency=medium
+
+  * Initial release (Closes: #952571)
+
+ -- Anthony Fok <foka@debian.org>  Wed, 26 Feb 2020 02:16:41 -0700

@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+
+# Avoid building /usr/bin/gosumcheck
+export DH_GOLANG_EXCLUDES := gosumcheck
+
+%:
+	dh $@ --buildsystem=golang --with golang
+
+# Avoid circular dependency on x/tools, and to avoid network access
+override_dh_auto_test:
+	DH_GOLANG_EXCLUDES=golang.org/x/mod/zip \
+		dh_auto_test -- -test.short
