@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Source: https://github.com/golang/mod
 Upstream-Name: x/mod
 Upstream-Contact: https://github.com/golang/go/issues
-Source: https://github.com/golang/mod
 
 Files: *
 Copyright: 2019 The Go Authors

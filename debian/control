@@ -1,26 +1,23 @@
 Source: golang-golang-x-mod
+Section: golang
+Priority: optional
 Maintainer: Debian Go Packaging Team <team+pkg-go@tracker.debian.org>
 Uploaders: Anthony Fok <foka@debian.org>
-Section: golang
-Testsuite: autopkgtest-pkg-go
-Priority: optional
+Rules-Requires-Root: no
 Build-Depends: debhelper-compat (= 13),
-               dh-golang,
-               golang-any,
-               golang-golang-x-crypto-dev,
-               golang-golang-x-xerrors-dev
-Standards-Version: 4.5.1
+               dh-sequence-golang,
+               golang-any
+Testsuite: autopkgtest-pkg-go
+Standards-Version: 4.6.2
 Vcs-Browser: https://salsa.debian.org/go-team/packages/golang-golang-x-mod
 Vcs-Git: https://salsa.debian.org/go-team/packages/golang-golang-x-mod.git
 Homepage: https://github.com/golang/mod
-Rules-Requires-Root: no
 XS-Go-Import-Path: golang.org/x/mod
 
 Package: golang-golang-x-mod-dev
 Architecture: all
-Depends: golang-golang-x-crypto-dev,
-         golang-golang-x-xerrors-dev,
-         ${misc:Depends}
+Multi-Arch: foreign
+Depends: ${misc:Depends}
 Description: Go module mechanics libraries
  This repository holds packages for writing tools
  that work directly with Go module mechanics.

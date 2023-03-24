@@ -1,3 +1,42 @@
+golang-golang-x-mod (0.7.0-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream version 0.7.0
+  * Remove golang-golang-x-crypto-dev from Depends
+  * Update Standards-Version to 4.6.2 (no changes)
+
+ -- Shengjing Zhu <zhsj@debian.org>  Mon, 02 Jan 2023 23:10:04 +0800
+
+golang-golang-x-mod (0.6.0-1) unstable; urgency=medium
+
+  * New upstream version 0.6.0
+  * debian/watch: Track release tarball and avoid "-dev"
+  * Reorder fields in debian/control and debian/copyright
+  * Update versioned dependencies as per go.mod:
+    - Bump to golang-golang-x-crypto-dev (>= 1:0.1.0)
+    - Remove dependency on golang-golang-x-xerrors-dev
+  * Bump Standards-Version to 4.6.1 (no change)
+  * Remove debian/patches/0001-Backport-workfile-parser.patch
+    which is included in the v0.6.0 release.
+
+ -- Anthony Fok <foka@debian.org>  Fri, 28 Oct 2022 07:54:10 -0600
+
+golang-golang-x-mod (0.5.1-2) unstable; urgency=medium
+
+  * Team upload.
+  * Backport workfile parser
+
+ -- Shengjing Zhu <zhsj@debian.org>  Wed, 23 Mar 2022 01:39:13 +0800
+
+golang-golang-x-mod (0.5.1-1) unstable; urgency=medium
+
+  * New upstream version 0.5.1
+  * Use dh-sequence-golang instead of dh-golang and --with=golang
+  * Bump Standards-Version to 4.6.0 (no change)
+  * Mark library package with "Multi-Arch: foreign"
+
+ -- Anthony Fok <foka@debian.org>  Fri, 03 Dec 2021 11:09:04 -0700
+
 golang-golang-x-mod (0.4.1-1) unstable; urgency=medium
 
   * Team upload.
