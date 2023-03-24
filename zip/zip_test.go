@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +31,47 @@ import (
 )
 
 const emptyHash = "h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
+var gitOnce struct {
+	path string
+	err  error
+	sync.Once
+}
+
+func init() {
+	if os.Getenv("GO_BUILDER_NAME") != "" || os.Getenv("GIT_TRACE_CURL") == "1" {
+		// Enable extra Git logging to diagnose networking issues.
+		// (These environment variables will be inherited by subprocesses.)
+		os.Setenv("GIT_TRACE_CURL", "1")
+		os.Setenv("GIT_TRACE_CURL_NO_DATA", "1")
+		os.Setenv("GIT_REDACT_COOKIES", "o,SSO,GSSO_Uberproxy")
+	}
+}
+
+// gitPath returns the path to a usable "git" command,
+// or a non-nil error.
+func gitPath() (string, error) {
+	gitOnce.Do(func() {
+		path, err := exec.LookPath("git")
+		if err != nil {
+			gitOnce.err = err
+			return
+		}
+		if runtime.GOOS == "plan9" {
+			gitOnce.err = errors.New("plan9 git does not support the full git command line")
+		}
+		gitOnce.path = path
+	})
+
+	return gitOnce.path, gitOnce.err
+}
+
+func mustHaveGit(t testing.TB) {
+	if _, err := gitPath(); err != nil {
+		t.Helper()
+		t.Skipf("skipping: %v", err)
+	}
+}
 
 type testParams struct {
 	path, version, wantErr, hash string
@@ -78,16 +121,8 @@ func readTest(file string) (testParams, error) {
 	return test, nil
 }
 
-func extractTxtarToTempDir(arc *txtar.Archive) (dir string, err error) {
-	dir, err = ioutil.TempDir("", "zip_test-*")
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err != nil {
-			os.RemoveAll(dir)
-		}
-	}()
+func extractTxtarToTempDir(t testing.TB, arc *txtar.Archive) (dir string, err error) {
+	dir = t.TempDir()
 	for _, f := range arc.Files {
 		filePath := filepath.Join(dir, f.Name)
 		if err := os.MkdirAll(filepath.Dir(filePath), 0777); err != nil {
@@ -100,8 +135,10 @@ func extractTxtarToTempDir(arc *txtar.Archive) (dir string, err error) {
 	return dir, nil
 }
 
-func extractTxtarToTempZip(arc *txtar.Archive) (zipPath string, err error) {
-	zipFile, err := ioutil.TempFile("", "zip_test-*.zip")
+func extractTxtarToTempZip(t *testing.T, arc *txtar.Archive) (zipPath string, err error) {
+	zipPath = filepath.Join(t.TempDir(), "txtar.zip")
+
+	zipFile, err := os.Create(zipPath)
 	if err != nil {
 		return "", err
 	}
@@ -109,10 +146,8 @@ func extractTxtarToTempZip(arc *txtar.Archive) (zipPath string, err error) {
 		if cerr := zipFile.Close(); err == nil && cerr != nil {
 			err = cerr
 		}
-		if err != nil {
-			os.Remove(zipFile.Name())
-		}
 	}()
+
 	zw := zip.NewWriter(zipFile)
 	for _, f := range arc.Files {
 		zf, err := zw.Create(f.Name)
@@ -269,15 +304,10 @@ func TestCheckDir(t *testing.T) {
 					break
 				}
 			}
-			tmpDir, err := extractTxtarToTempDir(test.archive)
+			tmpDir, err := extractTxtarToTempDir(t, test.archive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				if err := os.RemoveAll(tmpDir); err != nil {
-					t.Errorf("removing temp directory: %v", err)
-				}
-			}()
 
 			// Check the directory.
 			cf, err := modzip.CheckDir(tmpDir)
@@ -334,15 +364,10 @@ func TestCheckZip(t *testing.T) {
 					break
 				}
 			}
-			tmpZipPath, err := extractTxtarToTempZip(test.archive)
+			tmpZipPath, err := extractTxtarToTempZip(t, test.archive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				if err := os.Remove(tmpZipPath); err != nil {
-					t.Errorf("removing temp zip file: %v", err)
-				}
-			}()
 
 			// Check the zip.
 			m := module.Version{Path: test.path, Version: test.version}
@@ -461,15 +486,10 @@ func TestCreateFromDir(t *testing.T) {
 			}
 
 			// Write files to a temporary directory.
-			tmpDir, err := extractTxtarToTempDir(test.archive)
+			tmpDir, err := extractTxtarToTempDir(t, test.archive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				if err := os.RemoveAll(tmpDir); err != nil {
-					t.Errorf("removing temp directory: %v", err)
-				}
-			}()
 
 			// Create zip from the directory.
 			tmpZip, err := ioutil.TempFile("", "TestCreateFromDir-*.zip")
@@ -604,15 +624,10 @@ func TestUnzip(t *testing.T) {
 			}
 
 			// Convert txtar to temporary zip file.
-			tmpZipPath, err := extractTxtarToTempZip(test.archive)
+			tmpZipPath, err := extractTxtarToTempZip(t, test.archive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				if err := os.Remove(tmpZipPath); err != nil {
-					t.Errorf("removing temp zip file: %v", err)
-				}
-			}()
 
 			// Extract to a temporary directory.
 			tmpDir, err := ioutil.TempDir("", "TestUnzip")
@@ -877,9 +892,10 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		desc, wantErr string
-		m             module.Version
-		writeZip      func(t *testing.T, zipFile *os.File)
+		desc               string
+		wantErr1, wantErr2 string
+		m                  module.Version
+		writeZip           func(t *testing.T, zipFile *os.File)
 	}{
 		{
 			desc: "large_zip",
@@ -892,7 +908,7 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 			// this is not an error we care about; we're just testing whether
 			// Unzip checks the size of the file before opening.
 			// It's harder to create a valid zip file of exactly the right size.
-			wantErr: "not a valid zip file",
+			wantErr1: "not a valid zip file",
 		}, {
 			desc: "too_large_zip",
 			m:    module.Version{Path: "example.com/m", Version: "v1.0.0"},
@@ -901,7 +917,7 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: "module zip file is too large",
+			wantErr1: "module zip file is too large",
 		}, {
 			desc: "size_is_a_lie",
 			m:    module.Version{Path: "example.com/m", Version: "v1.0.0"},
@@ -950,7 +966,10 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: "uncompressed size of file example.com/m@v1.0.0/go.mod is larger than declared size",
+			// wantErr1 is for 1.18 and earlier,
+			// wantErr2 is for 1.19 and later.
+			wantErr1: "uncompressed size of file example.com/m@v1.0.0/go.mod is larger than declared size",
+			wantErr2: "not a valid zip file",
 		},
 	} {
 		test := test
@@ -976,12 +995,21 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer os.RemoveAll(tmpDir)
-			if err := modzip.Unzip(tmpDir, test.m, tmpZipPath); err == nil && test.wantErr != "" {
-				t.Fatalf("unexpected success; want error containing %q", test.wantErr)
-			} else if err != nil && test.wantErr == "" {
+
+			want := func() string {
+				s := fmt.Sprintf("%q", test.wantErr1)
+				if test.wantErr2 != "" {
+					s = fmt.Sprintf("%q or %q", test.wantErr1, test.wantErr2)
+				}
+				return s
+			}
+
+			if err := modzip.Unzip(tmpDir, test.m, tmpZipPath); err == nil && test.wantErr1 != "" {
+				t.Fatalf("unexpected success; want error containing %s", want())
+			} else if err != nil && test.wantErr1 == "" {
 				t.Fatalf("got error %q; want success", err)
-			} else if err != nil && !strings.Contains(err.Error(), test.wantErr) {
-				t.Fatalf("got error %q; want error containing %q", err, test.wantErr)
+			} else if err != nil && !strings.Contains(err.Error(), test.wantErr1) && (test.wantErr2 == "" || !strings.Contains(err.Error(), test.wantErr2)) {
+				t.Fatalf("got error %q; want error containing %s", err, want())
 			}
 		})
 	}
@@ -1003,16 +1031,17 @@ func TestUnzipSizeLimitsSpecial(t *testing.T) {
 // we should not let that happen accidentally.
 func TestVCS(t *testing.T) {
 	if testing.Short() {
-		t.Skip()
+		t.Skip("skipping VCS cloning in -short mode")
 	}
 
 	var downloadErrorCount int32
 	const downloadErrorLimit = 3
 
-	haveVCS := make(map[string]bool)
-	for _, vcs := range []string{"git", "hg"} {
-		_, err := exec.LookPath(vcs)
-		haveVCS[vcs] = err == nil
+	_, gitErr := gitPath()
+	_, hgErr := exec.LookPath("hg")
+	haveVCS := map[string]bool{
+		"git": gitErr == nil,
+		"hg":  hgErr == nil,
 	}
 
 	for _, test := range []struct {
@@ -1217,12 +1246,11 @@ func TestVCS(t *testing.T) {
 			if have, ok := haveVCS[test.vcs]; !ok {
 				t.Fatalf("unknown vcs: %s", test.vcs)
 			} else if !have {
-				t.Skip()
+				t.Skipf("no %s executable in path", test.vcs)
 			}
 			t.Parallel()
 
-			repo, dl, cleanup, err := downloadVCSZip(test.vcs, test.url, test.rev, test.subdir)
-			defer cleanup()
+			repo, dl, err := downloadVCSZip(t, test.vcs, test.url, test.rev, test.subdir)
 			if err != nil {
 				// This may fail if there's a problem with the network or upstream
 				// repository. The package being tested doesn't directly interact with
@@ -1289,7 +1317,7 @@ func TestVCS(t *testing.T) {
 				files = append(files, zipFile{name: name, f: f})
 			}
 			if !haveLICENSE && subdir != "" {
-				license, err := downloadVCSFile(test.vcs, repo, test.rev, "LICENSE")
+				license, err := downloadVCSFile(t, test.vcs, repo, test.rev, "LICENSE")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1336,41 +1364,31 @@ func TestVCS(t *testing.T) {
 	}
 }
 
-func downloadVCSZip(vcs, url, rev, subdir string) (repoDir string, dl *os.File, cleanup func(), err error) {
-	var cleanups []func()
-	cleanup = func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
-	}
-	repoDir, err = ioutil.TempDir("", "downloadVCSZip")
-	if err != nil {
-		return "", nil, cleanup, err
-	}
-	cleanups = append(cleanups, func() { os.RemoveAll(repoDir) })
+func downloadVCSZip(t testing.TB, vcs, url, rev, subdir string) (repoDir string, dl *os.File, err error) {
+	repoDir = t.TempDir()
 
 	switch vcs {
 	case "git":
 		// Create a repository and download the revision we want.
-		if err := run(repoDir, "git", "init", "--bare"); err != nil {
-			return "", nil, cleanup, err
+		if _, err := run(t, repoDir, "git", "init", "--bare"); err != nil {
+			return "", nil, err
 		}
 		if err := os.MkdirAll(filepath.Join(repoDir, "info"), 0777); err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
 		attrFile, err := os.OpenFile(filepath.Join(repoDir, "info", "attributes"), os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 		if err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
 		if _, err := attrFile.Write([]byte("\n* -export-subst -export-ignore\n")); err != nil {
 			attrFile.Close()
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
 		if err := attrFile.Close(); err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
-		if err := run(repoDir, "git", "remote", "add", "origin", "--", url); err != nil {
-			return "", nil, cleanup, err
+		if _, err := run(t, repoDir, "git", "remote", "add", "origin", "--", url); err != nil {
+			return "", nil, err
 		}
 		var refSpec string
 		if strings.HasPrefix(rev, "v") {
@@ -1378,86 +1396,105 @@ func downloadVCSZip(vcs, url, rev, subdir string) (repoDir string, dl *os.File, 
 		} else {
 			refSpec = fmt.Sprintf("%s:refs/dummy", rev)
 		}
-		if err := run(repoDir, "git", "fetch", "-f", "--depth=1", "origin", refSpec); err != nil {
-			return "", nil, cleanup, err
+		if _, err := run(t, repoDir, "git", "fetch", "-f", "--depth=1", "origin", refSpec); err != nil {
+			return "", nil, err
 		}
 
 		// Create an archive.
-		tmpZipFile, err := ioutil.TempFile("", "downloadVCSZip-*.zip")
+		zipPath := filepath.Join(t.TempDir(), "vcs.zip")
+		tmpZipFile, err := os.Create(zipPath)
 		if err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
-		cleanups = append(cleanups, func() {
-			name := tmpZipFile.Name()
-			tmpZipFile.Close()
-			os.Remove(name)
-		})
+		t.Cleanup(func() { tmpZipFile.Close() })
 		subdirArg := subdir
 		if subdir == "" {
 			subdirArg = "."
 		}
+
 		cmd := exec.Command("git", "-c", "core.autocrlf=input", "-c", "core.eol=lf", "archive", "--format=zip", "--prefix=prefix/", rev, "--", subdirArg)
 		cmd.Dir = repoDir
 		cmd.Stdout = tmpZipFile
-		if err := cmd.Run(); err != nil {
-			return "", nil, cleanup, err
+		stderr := new(strings.Builder)
+		cmd.Stderr = stderr
+
+		err = cmd.Run()
+		if stderr.Len() > 0 && (err != nil || testing.Verbose()) {
+			t.Logf("%v: %v\n%s", err, cmd, stderr)
+		} else if err != nil {
+			t.Logf("%v: %v", err, cmd)
+		} else {
+			t.Logf("%v", cmd)
 		}
+		if err != nil {
+			return "", nil, err
+		}
+
 		if _, err := tmpZipFile.Seek(0, 0); err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
-		return repoDir, tmpZipFile, cleanup, nil
+		return repoDir, tmpZipFile, nil
 
 	case "hg":
 		// Clone the whole repository.
-		if err := run(repoDir, "hg", "clone", "-U", "--", url, "."); err != nil {
-			return "", nil, cleanup, err
+		if _, err := run(t, repoDir, "hg", "clone", "-U", "--", url, "."); err != nil {
+			return "", nil, err
 		}
 
 		// Create an archive.
 		tmpZipFile, err := ioutil.TempFile("", "downloadVCSZip-*.zip")
 		if err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
 		tmpZipPath := tmpZipFile.Name()
 		tmpZipFile.Close()
-		cleanups = append(cleanups, func() { os.Remove(tmpZipPath) })
+		t.Cleanup(func() { os.Remove(tmpZipPath) })
 		args := []string{"archive", "-t", "zip", "--no-decode", "-r", rev, "--prefix=prefix/"}
 		if subdir != "" {
 			args = append(args, "-I", subdir+"/**")
 		}
 		args = append(args, "--", tmpZipPath)
-		if err := run(repoDir, "hg", args...); err != nil {
-			return "", nil, cleanup, err
+		if _, err := run(t, repoDir, "hg", args...); err != nil {
+			return "", nil, err
 		}
 		if tmpZipFile, err = os.Open(tmpZipPath); err != nil {
-			return "", nil, cleanup, err
+			return "", nil, err
 		}
-		cleanups = append(cleanups, func() { tmpZipFile.Close() })
-		return repoDir, tmpZipFile, cleanup, err
+		t.Cleanup(func() { tmpZipFile.Close() })
+		return repoDir, tmpZipFile, err
 
 	default:
-		return "", nil, cleanup, fmt.Errorf("vcs %q not supported", vcs)
+		return "", nil, fmt.Errorf("vcs %q not supported", vcs)
 	}
 }
 
-func downloadVCSFile(vcs, repo, rev, file string) ([]byte, error) {
+func downloadVCSFile(t testing.TB, vcs, repo, rev, file string) ([]byte, error) {
+	t.Helper()
 	switch vcs {
 	case "git":
-		cmd := exec.Command("git", "cat-file", "blob", rev+":"+file)
-		cmd.Dir = repo
-		return cmd.Output()
+		return run(t, repo, "git", "cat-file", "blob", rev+":"+file)
 	default:
 		return nil, fmt.Errorf("vcs %q not supported", vcs)
 	}
 }
 
-func run(dir string, name string, args ...string) error {
+func run(t testing.TB, dir string, name string, args ...string) ([]byte, error) {
+	t.Helper()
+
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %v", strings.Join(args, " "), err)
+	stderr := new(strings.Builder)
+	cmd.Stderr = stderr
+
+	out, err := cmd.Output()
+	if stderr.Len() > 0 && (err != nil || testing.Verbose()) {
+		t.Logf("%v: %v\n%s", err, cmd, stderr)
+	} else if err != nil {
+		t.Logf("%v: %v", err, cmd)
+	} else {
+		t.Logf("%v", cmd)
 	}
-	return nil
+	return out, err
 }
 
 type zipFile struct {
@@ -1468,3 +1505,291 @@ type zipFile struct {
 func (f zipFile) Path() string                 { return f.name }
 func (f zipFile) Lstat() (os.FileInfo, error)  { return f.f.FileInfo(), nil }
 func (f zipFile) Open() (io.ReadCloser, error) { return f.f.Open() }
+
+func TestCreateFromVCS_basic(t *testing.T) {
+	mustHaveGit(t)
+
+	// Write files to a temporary directory.
+	tmpDir, err := extractTxtarToTempDir(t, txtar.Parse([]byte(`-- go.mod --
+module example.com/foo/bar
+
+go 1.12
+-- a.go --
+package a
+
+var A = 5
+-- b.go --
+package a
+
+var B = 5
+-- c/c.go --
+package c
+
+var C = 5
+-- d/d.go --
+package c
+
+var D = 5
+-- .gitignore --
+b.go
+c/`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitInit(t, tmpDir)
+	gitCommit(t, tmpDir)
+
+	for _, tc := range []struct {
+		desc      string
+		subdir    string
+		wantFiles []string
+	}{
+		{
+			desc:      "from root",
+			subdir:    "",
+			wantFiles: []string{"go.mod", "a.go", "d/d.go", ".gitignore"},
+		},
+		{
+			desc:   "from subdir",
+			subdir: "d/",
+			// Note: File paths are zipped as if the subdir were the root. ie d.go instead of d/d.go.
+			wantFiles: []string{"d.go"},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			// Create zip from the directory.
+			tmpZip := &bytes.Buffer{}
+
+			m := module.Version{Path: "example.com/foo/bar", Version: "v0.0.1"}
+
+			if err := modzip.CreateFromVCS(tmpZip, m, tmpDir, "HEAD", tc.subdir); err != nil {
+				t.Fatal(err)
+			}
+
+			readerAt := bytes.NewReader(tmpZip.Bytes())
+			r, err := zip.NewReader(readerAt, int64(tmpZip.Len()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotFiles []string
+			gotMap := map[string]bool{}
+			for _, f := range r.File {
+				gotMap[f.Name] = true
+				gotFiles = append(gotFiles, f.Name)
+			}
+			wantMap := map[string]bool{}
+			for _, f := range tc.wantFiles {
+				p := filepath.Join("example.com", "foo", "bar@v0.0.1", f)
+				wantMap[p] = true
+			}
+
+			// The things that should be there.
+			for f := range gotMap {
+				if !wantMap[f] {
+					t.Errorf("CreatedFromVCS: zipped file contains %s, but expected it not to", f)
+				}
+			}
+
+			// The things that are missing.
+			for f := range wantMap {
+				if !gotMap[f] {
+					t.Errorf("CreatedFromVCS: zipped file doesn't contain %s, but expected it to. all files: %v", f, gotFiles)
+				}
+			}
+		})
+	}
+}
+
+// Test what the experience of creating a zip from a v2 module is like.
+func TestCreateFromVCS_v2(t *testing.T) {
+	mustHaveGit(t)
+
+	// Write files to a temporary directory.
+	tmpDir, err := extractTxtarToTempDir(t, txtar.Parse([]byte(`-- go.mod --
+module example.com/foo/bar
+
+go 1.12
+-- a.go --
+package a
+
+var A = 5
+-- b.go --
+package a
+
+var B = 5
+-- go.mod --
+module example.com/foo/bar
+
+go 1.12
+-- gaz/v2/a_2.go --
+package a
+
+var C = 9
+-- gaz/v2/b_2.go --
+package a
+
+var B = 11
+-- gaz/v2/go.mod --
+module example.com/foo/bar/v2
+
+go 1.12
+-- .gitignore --
+`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitInit(t, tmpDir)
+	gitCommit(t, tmpDir)
+
+	// Create zip from the directory.
+	tmpZip := &bytes.Buffer{}
+
+	m := module.Version{Path: "example.com/foo/bar/v2", Version: "v2.0.0"}
+
+	if err := modzip.CreateFromVCS(tmpZip, m, tmpDir, "HEAD", "gaz/v2"); err != nil {
+		t.Fatal(err)
+	}
+
+	readerAt := bytes.NewReader(tmpZip.Bytes())
+	r, err := zip.NewReader(readerAt, int64(tmpZip.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotFiles []string
+	gotMap := map[string]bool{}
+	for _, f := range r.File {
+		gotMap[f.Name] = true
+		gotFiles = append(gotFiles, f.Name)
+	}
+	wantMap := map[string]bool{
+		"example.com/foo/bar/v2@v2.0.0/a_2.go": true,
+		"example.com/foo/bar/v2@v2.0.0/b_2.go": true,
+		"example.com/foo/bar/v2@v2.0.0/go.mod": true,
+	}
+
+	// The things that should be there.
+	for f := range gotMap {
+		if !wantMap[f] {
+			t.Errorf("CreatedFromVCS: zipped file contains %s, but expected it not to", f)
+		}
+	}
+
+	// The things that are missing.
+	for f := range wantMap {
+		if !gotMap[f] {
+			t.Errorf("CreatedFromVCS: zipped file doesn't contain %s, but expected it to. all files: %v", f, gotFiles)
+		}
+	}
+}
+
+func TestCreateFromVCS_nonGitDir(t *testing.T) {
+	mustHaveGit(t)
+
+	// Write files to a temporary directory.
+	tmpDir, err := extractTxtarToTempDir(t, txtar.Parse([]byte(`-- go.mod --
+module example.com/foo/bar
+
+go 1.12
+-- a.go --
+package a
+
+var A = 5
+`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create zip from the directory.
+	tmpZip, err := ioutil.TempFile("", "TestCreateFromDir-*.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpZipPath := tmpZip.Name()
+	defer func() {
+		tmpZip.Close()
+		os.Remove(tmpZipPath)
+	}()
+
+	m := module.Version{Path: "example.com/foo/bar", Version: "v0.0.1"}
+
+	err = modzip.CreateFromVCS(tmpZip, m, tmpDir, "HEAD", "")
+	if err == nil {
+		t.Fatal("CreateFromVCS: expected error, got nil")
+	}
+	var gotErr *modzip.UnrecognizedVCSError
+	if !errors.As(err, &gotErr) {
+		t.Errorf("CreateFromVCS: returned error does not unwrap to modzip.ErrUnrecognisedVCS, but expected it to. returned error: %v", err)
+	} else if gotErr.RepoRoot != tmpDir {
+		t.Errorf("CreateFromVCS: returned error has RepoRoot %q, but want %q. returned error: %v", gotErr.RepoRoot, tmpDir, err)
+	}
+}
+
+func TestCreateFromVCS_zeroCommitsGitDir(t *testing.T) {
+	mustHaveGit(t)
+
+	// Write files to a temporary directory.
+	tmpDir, err := extractTxtarToTempDir(t, txtar.Parse([]byte(`-- go.mod --
+module example.com/foo/bar
+
+go 1.12
+-- a.go --
+package a
+
+var A = 5
+`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitInit(t, tmpDir)
+
+	// Create zip from the directory.
+	tmpZip, err := ioutil.TempFile("", "TestCreateFromDir-*.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpZipPath := tmpZip.Name()
+	defer func() {
+		tmpZip.Close()
+		os.Remove(tmpZipPath)
+	}()
+
+	m := module.Version{Path: "example.com/foo/bar", Version: "v0.0.1"}
+
+	if err := modzip.CreateFromVCS(tmpZip, m, tmpDir, "HEAD", ""); err == nil {
+		t.Error("CreateFromVCS: expected error, got nil")
+	}
+}
+
+// gitInit runs "git init" at the specified dir.
+//
+// Note: some environments - and trybots - don't have git installed. This
+// function will cause the calling test to be skipped if that's the case.
+func gitInit(t testing.TB, dir string) {
+	t.Helper()
+	mustHaveGit(t)
+
+	if _, err := run(t, dir, "git", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, dir, "git", "config", "user.name", "Go Gopher"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, dir, "git", "config", "user.email", "gopher@golang.org"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitCommit(t testing.TB, dir string) {
+	t.Helper()
+	mustHaveGit(t)
+
+	if _, err := run(t, dir, "git", "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, dir, "git", "commit", "-m", "some commit"); err != nil {
+		t.Fatal(err)
+	}
+}

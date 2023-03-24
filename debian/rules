@@ -4,7 +4,7 @@
 export DH_GOLANG_EXCLUDES := gosumcheck
 
 %:
-	dh $@ --buildsystem=golang --with golang
+	dh $@ --buildsystem=golang
 
 # Avoid circular dependency on x/tools, and to avoid network access
 override_dh_auto_test:

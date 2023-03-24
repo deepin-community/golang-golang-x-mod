@@ -5,13 +5,12 @@
 package note
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"strings"
 	"testing"
 	"testing/iotest"
-
-	"golang.org/x/crypto/ed25519"
 )
 
 func TestNewVerifier(t *testing.T) {
@@ -100,12 +99,12 @@ func testSignerAndVerifier(t *testing.T, Name string, signer Signer, verifier Ve
 	}
 	sig[0]++
 	if verifier.Verify(msg, sig) {
-		t.Fatalf("verifier.Verify succceeded on corrupt signature")
+		t.Fatalf("verifier.Verify succeeded on corrupt signature")
 	}
 	sig[0]--
 	msg[0]++
 	if verifier.Verify(msg, sig) {
-		t.Fatalf("verifier.Verify succceeded on corrupt message")
+		t.Fatalf("verifier.Verify succeeded on corrupt message")
 	}
 }
 
@@ -165,7 +164,7 @@ func TestFromEd25519(t *testing.T) {
 }
 
 // newSignerFromEd25519Seed constructs a new signer from a verifier name and a
-// golang.org/x/crypto/ed25519 private key seed.
+// crypto/ed25519 private key seed.
 func newSignerFromEd25519Seed(name string, seed []byte) (Signer, error) {
 	if len(seed) != ed25519.SeedSize {
 		return nil, errors.New("invalid seed size")
@@ -178,7 +177,7 @@ func newSignerFromEd25519Seed(name string, seed []byte) (Signer, error) {
 
 	s := &signer{
 		name: name,
-		hash: uint32(hash),
+		hash: hash,
 		sign: func(msg []byte) ([]byte, error) {
 			return ed25519.Sign(priv, msg), nil
 		},
@@ -295,6 +294,12 @@ type errSigner struct {
 
 func (e *errSigner) Sign([]byte) ([]byte, error) {
 	return nil, errSurprise
+}
+
+type fixedVerifier struct{ v Verifier }
+
+func (v fixedVerifier) Verifier(name string, hash uint32) (Verifier, error) {
+	return v.v, nil
 }
 
 func TestOpen(t *testing.T) {
@@ -426,6 +431,18 @@ then you don't know what your problem is.
 		if n != nil || err == nil || err.Error() != "malformed note" {
 			t.Fatalf("Open bad msg = %v, %v, want nil, malformed note error\nmsg:\n%s", n, err, msg)
 		}
+	}
+
+	// Verifiers returns a Verifier for the wrong name or hash.
+	misnamedSig := strings.Replace(peterSig, "PeterNeumann", "CarmenSandiego", -1)
+	_, err = Open([]byte(text+"\n"+misnamedSig), fixedVerifier{peterVerifier})
+	if err != errMismatchedVerifier {
+		t.Fatalf("Open with wrong Verifier, err=%v, want errMismatchedVerifier", err)
+	}
+	wrongHash := strings.Replace(peterSig, "x08g", "xxxx", -1)
+	_, err = Open([]byte(text+"\n"+wrongHash), fixedVerifier{peterVerifier})
+	if err != errMismatchedVerifier {
+		t.Fatalf("Open with wrong Verifier, err=%v, want errMismatchedVerifier", err)
 	}
 }
 

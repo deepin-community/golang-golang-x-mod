@@ -6,6 +6,8 @@ package modfile
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"golang.org/x/mod/module"
@@ -28,6 +30,32 @@ var addRequireTests = []struct {
 		`
 		module m
 		require x.y/z v1.5.6
+		`,
+	},
+	{
+		`existing2`,
+		`
+		module m
+		require (
+			x.y/z v1.2.3 // first
+			x.z/a v0.1.0 // first-a
+		)
+		require x.y/z v1.4.5 // second
+		require (
+			x.y/z v1.6.7 // third
+			x.z/a v0.2.0 // third-a
+		)
+		`,
+		"x.y/z", "v1.8.9",
+		`
+		module m
+
+		require (
+			x.y/z v1.8.9 // first
+			x.z/a v0.1.0 // first-a
+		)
+
+		require x.z/a v0.2.0 // third-a
 		`,
 	},
 	{
@@ -64,16 +92,39 @@ var addRequireTests = []struct {
 	},
 }
 
+type require struct {
+	path, vers string
+	indirect   bool
+}
+
 var setRequireTests = []struct {
 	desc string
 	in   string
-	mods []struct {
-		path     string
-		vers     string
-		indirect bool
-	}
-	out string
+	mods []require
+	out  string
 }{
+	{
+		`https://golang.org/issue/45932`,
+		`module m
+		require (
+			x.y/a v1.2.3 //indirect
+			x.y/b v1.2.3
+			x.y/c v1.2.3
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", false},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3
+			x.y/c v1.2.3
+		)
+		`,
+	},
 	{
 		`existing`,
 		`module m
@@ -84,11 +135,7 @@ var setRequireTests = []struct {
 			x.y/d v1.2.3
 		)
 		`,
-		[]struct {
-			path     string
-			vers     string
-			indirect bool
-		}{
+		[]require{
 			{"x.y/a", "v1.2.3", false},
 			{"x.y/b", "v1.2.3", false},
 			{"x.y/c", "v1.2.3", false},
@@ -114,11 +161,7 @@ var setRequireTests = []struct {
 			x.y/g v1.2.3 //	indirect
 		)
 		`,
-		[]struct {
-			path     string
-			vers     string
-			indirect bool
-		}{
+		[]require{
 			{"x.y/a", "v1.2.3", true},
 			{"x.y/b", "v1.2.3", true},
 			{"x.y/c", "v1.2.3", true},
@@ -138,6 +181,470 @@ var setRequireTests = []struct {
 			x.y/g v1.2.3 //	indirect
 		)
 		`,
+	},
+	{
+		`existing_multi`,
+		`module m
+		require x.y/a v1.2.3
+		require x.y/b v1.2.3
+		require x.y/c v1.0.0 // not v1.2.3!
+		require x.y/d v1.2.3 // comment kept
+		require x.y/e v1.2.3 // comment kept
+		require x.y/f v1.2.3 // indirect
+		require x.y/g v1.2.3 // indirect
+		`,
+		[]require{
+			{"x.y/h", "v1.2.3", false},
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", false},
+			{"x.y/d", "v1.2.3", false},
+			{"x.y/e", "v1.2.3", true},
+			{"x.y/f", "v1.2.3", false},
+			{"x.y/g", "v1.2.3", false},
+		},
+		`module m
+		require x.y/a v1.2.3
+
+		require x.y/b v1.2.3
+
+		require x.y/c v1.2.3 // not v1.2.3!
+
+		require x.y/d v1.2.3 // comment kept
+
+		require x.y/e v1.2.3 // indirect; comment kept
+
+		require x.y/f v1.2.3
+
+		require (
+			x.y/g v1.2.3
+			x.y/h v1.2.3
+		)
+		`,
+	},
+	{
+		`existing_duplicate`,
+		`module m
+		require (
+			x.y/a v1.0.0 // zero
+			x.y/a v1.1.0 // one
+			x.y/a v1.2.3 // two
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+		require x.y/a v1.2.3 // indirect; zero
+		`,
+	},
+	{
+		`existing_duplicate_multi`,
+		`module m
+		require x.y/a v1.0.0 // zero
+		require x.y/a v1.1.0 // one
+		require x.y/a v1.2.3 // two
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+		require x.y/a v1.2.3 // indirect; zero
+		`,
+	},
+}
+
+var setRequireSeparateIndirectTests = []struct {
+	desc string
+	in   string
+	mods []require
+	out  string
+}{
+	{
+		`https://golang.org/issue/45932`,
+		`module m
+		require (
+			x.y/a v1.2.3 //indirect
+			x.y/b v1.2.3
+			x.y/c v1.2.3
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", false},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3
+			x.y/c v1.2.3
+		)
+		`,
+	},
+	{
+		`existing`,
+		`module m
+		require (
+			x.y/b v1.2.3
+
+			x.y/a v1.2.3
+			x.y/d v1.2.3
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", false},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3
+			x.y/c v1.2.3
+		)
+		`,
+	},
+	{
+		`existing_indirect`,
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3 //
+			x.y/c v1.2.3 //c
+			x.y/d v1.2.3 //   c
+			x.y/e v1.2.3 // indirect
+			x.y/f v1.2.3 //indirect
+			x.y/g v1.2.3 //	indirect
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", true},
+			{"x.y/e", "v1.2.3", true},
+			{"x.y/f", "v1.2.3", true},
+			{"x.y/g", "v1.2.3", true},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3 // indirect
+			x.y/b v1.2.3 // indirect
+			x.y/c v1.2.3 // indirect; c
+			x.y/d v1.2.3 // indirect; c
+			x.y/e v1.2.3 // indirect
+			x.y/f v1.2.3 //indirect
+			x.y/g v1.2.3 //	indirect
+		)
+		`,
+	},
+	{
+		`existing_line`,
+		`module m
+		require x.y/a v1.0.0
+		require x.y/c v1.0.0 // indirect
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", true},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3
+		)
+		require (
+			x.y/c v1.2.3 // indirect
+			x.y/d v1.2.3 // indirect
+		)`,
+	},
+	{
+		`existing_multi`,
+		`module m
+		require x.y/a v1.2.3
+		require x.y/b v1.2.3 // demoted to indirect
+		require x.y/c v1.0.0 // not v1.2.3!
+		require x.y/d v1.2.3 // comment kept
+		require x.y/e v1.2.3 // comment kept
+		require x.y/f v1.2.3 // indirect; promoted to direct
+		// promoted to direct
+		require x.y/g v1.2.3 // indirect
+		require x.y/i v1.2.3 // indirect
+		require x.y/j v1.2.3 // indirect
+		`,
+		[]require{
+			{"x.y/h", "v1.2.3", false}, // out of alphabetical order
+			{"x.y/i", "v1.2.3", true},
+			{"x.y/j", "v1.2.3", true},
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", false},
+			{"x.y/d", "v1.2.3", false},
+			{"x.y/e", "v1.2.3", true},
+			{"x.y/f", "v1.2.3", false},
+			{"x.y/g", "v1.2.3", false},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/h v1.2.3
+		)
+		require x.y/b v1.2.3 // indirect; demoted to indirect
+		require x.y/c v1.2.3 // not v1.2.3!
+		require x.y/d v1.2.3 // comment kept
+		require x.y/e v1.2.3 // indirect; comment kept
+		require x.y/f v1.2.3 // promoted to direct
+		// promoted to direct
+		require x.y/g v1.2.3
+		require x.y/i v1.2.3 // indirect
+		require x.y/j v1.2.3 // indirect
+		`,
+	},
+	{
+		`existing_duplicate`,
+		`module m
+		require (
+			x.y/a v1.0.0 // zero
+			x.y/a v1.1.0 // one
+			x.y/a v1.2.3 // two
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+		require x.y/a v1.2.3 // indirect; zero
+		`,
+	},
+	{
+		`existing_duplicate_multi`,
+		`module m
+		require x.y/a v1.0.0 // zero
+		require x.y/a v1.1.0 // one
+		require x.y/a v1.2.3 // two
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+		require x.y/a v1.2.3 // indirect; zero
+		`,
+	},
+	{
+		`existing_duplicate_mix_indirect`,
+		`module m
+		require (
+			x.y/a v1.0.0 // zero
+			x.y/a v1.1.0 // indirect; one
+			x.y/a v1.2.3 // indirect; two
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+		require x.y/a v1.2.3 // indirect; zero
+		`,
+	},
+	{
+		`existing_duplicate_mix_direct`,
+		`module m
+		require (
+			x.y/a v1.0.0 // indirect; zero
+			x.y/a v1.1.0 // one
+			x.y/a v1.2.3 // two
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+		},
+		`module m
+		require x.y/a v1.2.3 // zero
+		`,
+	},
+	{
+		`add_indirect_after_last_direct`,
+		`module m
+		require (
+			x.y/a v1.0.0 // comment a preserved
+			x.y/d v1.0.0 // comment d preserved
+		)
+		require (
+			x.y/b v1.0.0 // comment b preserved
+			x.y/e v1.0.0 // comment e preserved
+		)
+		go 1.17
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", false},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", false},
+			{"x.y/e", "v1.2.3", false},
+			{"x.y/f", "v1.2.3", true},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3 // comment a preserved
+			x.y/d v1.2.3 // comment d preserved
+		)
+		require (
+			x.y/b v1.2.3 // comment b preserved
+			x.y/e v1.2.3 // comment e preserved
+		)
+		require (
+			x.y/c v1.2.3 // indirect
+			x.y/f v1.2.3 // indirect
+		)
+		go 1.17
+		`,
+	},
+	{
+		`add_direct_before_first_indirect`,
+		`module m
+		require (
+			x.y/b v1.0.0 // indirect; comment b preserved
+			x.y/e v1.0.0 // indirect; comment d preserved
+		)
+		require (
+			x.y/c v1.0.0 // indirect; comment c preserved
+			x.y/f v1.0.0 // indirect; comment e preserved
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", false},
+			{"x.y/e", "v1.2.3", true},
+			{"x.y/f", "v1.2.3", true},
+		},
+		`module m
+		require (
+			x.y/b v1.2.3 // indirect; comment b preserved
+			x.y/e v1.2.3 // indirect; comment d preserved
+		)
+		require (
+			x.y/c v1.2.3 // indirect; comment c preserved
+			x.y/f v1.2.3 // indirect; comment e preserved
+		)
+		require (
+			x.y/a v1.2.3
+			x.y/d v1.2.3
+		)
+		`,
+	},
+	{
+		`add_indirect_after_mixed`,
+		`module m
+		require (
+			x.y/a v1.0.0
+			x.y/b v1.0.0 // indirect
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", false},
+			{"x.y/e", "v1.2.3", true},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3
+			x.y/d v1.2.3
+		)
+		require (
+			x.y/b v1.2.3 // indirect
+			x.y/c v1.2.3 // indirect
+			x.y/e v1.2.3 // indirect
+		)
+		`,
+	},
+	{
+		`preserve_block_comment_indirect_to_direct`,
+		`module m
+		// save
+		require (
+			x.y/a v1.2.3 // indirect
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+		},
+		`module m
+
+		// save
+		require x.y/a v1.2.3
+		`,
+	},
+	{
+		`preserve_block_comment_direct_to_indirect`,
+		`module m
+		// save
+		require (
+			x.y/a v1.2.3
+		)
+		`,
+		[]require{
+			{"x.y/a", "v1.2.3", true},
+		},
+		`module m
+
+		// save
+		require x.y/a v1.2.3 // indirect
+		`,
+	},
+	{
+		`regroup_flat_uncommented_block`,
+		`module m
+		require (
+			x.y/a v1.0.0 // a
+			x.y/b v1.0.0 // indirect; b
+			x.y/c v1.0.0 // indirect
+		)`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", false},
+		},
+		`module m
+		require (
+			x.y/a v1.2.3 // a
+			x.y/d v1.2.3
+		)
+		require (
+			x.y/b v1.2.3 // indirect; b
+			x.y/c v1.2.3 // indirect
+		)`,
+	},
+	{
+		`dont_regroup_flat_commented_block`,
+		`module m
+		// dont regroup
+		require (
+			x.y/a v1.0.0
+			x.y/b v1.0.0 // indirect
+			x.y/c v1.0.0 // indirect
+		)`,
+		[]require{
+			{"x.y/a", "v1.2.3", false},
+			{"x.y/b", "v1.2.3", true},
+			{"x.y/c", "v1.2.3", true},
+			{"x.y/d", "v1.2.3", false},
+		},
+		`module m
+		// dont regroup
+		require (
+			x.y/a v1.2.3
+			x.y/b v1.2.3 // indirect
+			x.y/c v1.2.3 // indirect
+		)
+		require x.y/d v1.2.3`,
 	},
 }
 
@@ -185,6 +692,45 @@ var addGoTests = []struct {
 		`1.14`,
 		`require x.y/a v1.2.3
 		go 1.14
+		`,
+	},
+}
+
+var addExcludeTests = []struct {
+	desc    string
+	in      string
+	path    string
+	version string
+	out     string
+}{
+	{
+		`compatible`,
+		`module m
+		`,
+		`example.com`,
+		`v1.2.3`,
+		`module m
+		exclude example.com v1.2.3
+		`,
+	},
+	{
+		`gopkg.in v0`,
+		`module m
+		`,
+		`gopkg.in/foo.v0`,
+		`v0.2.3`,
+		`module m
+		exclude gopkg.in/foo.v0 v0.2.3
+		`,
+	},
+	{
+		`gopkg.in v1`,
+		`module m
+		`,
+		`gopkg.in/foo.v1`,
+		`v1.2.3`,
+		`module m
+		exclude gopkg.in/foo.v1 v1.2.3
 		`,
 	},
 }
@@ -458,6 +1004,118 @@ suffix`,
 	},
 }
 
+var moduleDeprecatedTests = []struct {
+	desc, in, want string
+}{
+	// retractRationaleTests exercises some of the same code, so these tests
+	// don't exhaustively cover comment extraction.
+	{
+		`no_comment`,
+		`module m`,
+		``,
+	},
+	{
+		`other_comment`,
+		`// yo
+		module m`,
+		``,
+	},
+	{
+		`deprecated_no_colon`,
+		`//Deprecated
+		module m`,
+		``,
+	},
+	{
+		`deprecated_no_space`,
+		`//Deprecated:blah
+		module m`,
+		`blah`,
+	},
+	{
+		`deprecated_simple`,
+		`// Deprecated: blah
+		module m`,
+		`blah`,
+	},
+	{
+		`deprecated_lowercase`,
+		`// deprecated: blah
+		module m`,
+		``,
+	},
+	{
+		`deprecated_multiline`,
+		`// Deprecated: one
+		// two
+		module m`,
+		"one\ntwo",
+	},
+	{
+		`deprecated_mixed`,
+		`// some other comment
+		// Deprecated: blah
+		module m`,
+		``,
+	},
+	{
+		`deprecated_middle`,
+		`// module m is Deprecated: blah
+		module m`,
+		``,
+	},
+	{
+		`deprecated_multiple`,
+		`// Deprecated: a
+		// Deprecated: b
+		module m`,
+		"a\nDeprecated: b",
+	},
+	{
+		`deprecated_paragraph`,
+		`// Deprecated: a
+		// b
+		//
+		// c
+		module m`,
+		"a\nb",
+	},
+	{
+		`deprecated_paragraph_space`,
+		`// Deprecated: the next line has a space
+		// 
+		// c
+		module m`,
+		"the next line has a space",
+	},
+	{
+		`deprecated_suffix`,
+		`module m // Deprecated: blah`,
+		`blah`,
+	},
+	{
+		`deprecated_mixed_suffix`,
+		`// some other comment
+		module m // Deprecated: blah`,
+		``,
+	},
+	{
+		`deprecated_mixed_suffix_paragraph`,
+		`// some other comment
+		//
+		module m // Deprecated: blah`,
+		`blah`,
+	},
+	{
+		`deprecated_block`,
+		`// Deprecated: blah
+		module (
+			m
+		)`,
+		`blah`,
+	},
+}
+
 var sortBlocksTests = []struct {
 	desc, in, out string
 	strict        bool
@@ -569,52 +1227,165 @@ var sortBlocksTests = []struct {
 }
 
 var addRetractValidateVersionTests = []struct {
-	dsc, low, high string
+	desc      string
+	path      string
+	low, high string
+	wantErr   string
 }{
 	{
-		"blank_version",
-		"",
-		"",
+		`blank_version`,
+		`example.com/m`,
+		``,
+		``,
+		`version "" invalid: must be of the form v1.2.3`,
 	},
 	{
-		"missing_prefix",
-		"1.0.0",
-		"1.0.0",
+		`missing prefix`,
+		`example.com/m`,
+		`1.0.0`,
+		`1.0.0`,
+		`version "1.0.0" invalid: must be of the form v1.2.3`,
 	},
 	{
-		"non_canonical",
-		"v1.2",
-		"v1.2",
+		`non-canonical`,
+		`example.com/m`,
+		`v1.2`,
+		`v1.2`,
+		`version "v1.2" invalid: must be of the form v1.2.3`,
 	},
 	{
-		"invalid_range",
-		"v1.2.3",
-		"v1.3",
+		`invalid range`,
+		`example.com/m`,
+		`v1.2.3`,
+		`v1.3`,
+		`version "v1.3" invalid: must be of the form v1.2.3`,
+	},
+	{
+		`mismatched major`,
+		`example.com/m/v2`,
+		`v1.0.0`,
+		`v1.0.0`,
+		`version "v1.0.0" invalid: should be v2, not v1`,
+	},
+	{
+		`missing +incompatible`,
+		`example.com/m`,
+		`v2.0.0`,
+		`v2.0.0`,
+		`version "v2.0.0" invalid: should be v2.0.0+incompatible (or module example.com/m/v2)`,
 	},
 }
 
 var addExcludeValidateVersionTests = []struct {
-	dsc, ver string
+	desc    string
+	path    string
+	version string
+	wantErr string
 }{
 	{
-		"blank_version",
-		"",
+		`blank version`,
+		`example.com/m`,
+		``,
+		`version "" invalid: must be of the form v1.2.3`,
 	},
 	{
-		"missing_prefix",
-		"1.0.0",
+		`missing prefix`,
+		`example.com/m`,
+		`1.0.0`,
+		`version "1.0.0" invalid: must be of the form v1.2.3`,
 	},
 	{
-		"non_canonical",
-		"v1.2",
+		`non-canonical`,
+		`example.com/m`,
+		`v1.2`,
+		`version "v1.2" invalid: must be of the form v1.2.3`,
 	},
+	{
+		`mismatched major`,
+		`example.com/m/v2`,
+		`v1.2.3`,
+		`version "v1.2.3" invalid: should be v2, not v1`,
+	},
+	{
+		`missing +incompatible`,
+		`example.com/m`,
+		`v2.3.4`,
+		`version "v2.3.4" invalid: should be v2.3.4+incompatible (or module example.com/m/v2)`,
+	},
+}
+
+var fixVersionTests = []struct {
+	desc, in, want, wantErr string
+	fix                     VersionFixer
+}{
+	{
+		desc: `require`,
+		in:   `require example.com/m 1.0.0`,
+		want: `require example.com/m v1.0.0`,
+		fix:  fixV,
+	},
+	{
+		desc: `replace`,
+		in:   `replace example.com/m 1.0.0 => example.com/m 1.1.0`,
+		want: `replace example.com/m v1.0.0 => example.com/m v1.1.0`,
+		fix:  fixV,
+	},
+	{
+		desc:    `replace_version_in_path`,
+		in:      `replace example.com/m@v1.0.0 => example.com/m@v1.1.0`,
+		wantErr: `replacement module must match format 'path version', not 'path@version'`,
+		fix:     fixV,
+	},
+	{
+		desc:    `replace_version_in_later_path`,
+		in:      `replace example.com/m => example.com/m@v1.1.0`,
+		wantErr: `replacement module must match format 'path version', not 'path@version'`,
+		fix:     fixV,
+	},
+	{
+		desc: `exclude`,
+		in:   `exclude example.com/m 1.0.0`,
+		want: `exclude example.com/m v1.0.0`,
+		fix:  fixV,
+	},
+	{
+		desc: `retract_single`,
+		in: `module example.com/m
+		retract 1.0.0`,
+		want: `module example.com/m
+		retract v1.0.0`,
+		fix: fixV,
+	},
+	{
+		desc: `retract_interval`,
+		in: `module example.com/m
+		retract [1.0.0, 1.1.0]`,
+		want: `module example.com/m
+		retract [v1.0.0, v1.1.0]`,
+		fix: fixV,
+	},
+	{
+		desc:    `retract_nomod`,
+		in:      `retract 1.0.0`,
+		wantErr: `in:1: no module directive found, so retract cannot be used`,
+		fix:     fixV,
+	},
+}
+
+func fixV(path, version string) (string, error) {
+	if path != "example.com/m" {
+		return "", fmt.Errorf("module path must be example.com/m")
+	}
+	return "v" + version, nil
 }
 
 func TestAddRequire(t *testing.T) {
 	for _, tt := range addRequireTests {
 		t.Run(tt.desc, func(t *testing.T) {
 			testEdit(t, tt.in, tt.out, true, func(f *File) error {
-				return f.AddRequire(tt.path, tt.vers)
+				err := f.AddRequire(tt.path, tt.vers)
+				f.Cleanup()
+				return err
 			})
 		})
 	}
@@ -636,10 +1407,37 @@ func TestSetRequire(t *testing.T) {
 
 			f := testEdit(t, tt.in, tt.out, true, func(f *File) error {
 				f.SetRequire(mods)
+				f.Cleanup()
 				return nil
 			})
 
-			f.Cleanup()
+			if len(f.Require) != len(mods) {
+				t.Errorf("after Cleanup, len(Require) = %v; want %v", len(f.Require), len(mods))
+			}
+		})
+	}
+}
+
+func TestSetRequireSeparateIndirect(t *testing.T) {
+	for _, tt := range setRequireSeparateIndirectTests {
+		t.Run(tt.desc, func(t *testing.T) {
+			var mods []*Require
+			for _, mod := range tt.mods {
+				mods = append(mods, &Require{
+					Mod: module.Version{
+						Path:    mod.path,
+						Version: mod.vers,
+					},
+					Indirect: mod.indirect,
+				})
+			}
+
+			f := testEdit(t, tt.in, tt.out, true, func(f *File) error {
+				f.SetRequireSeparateIndirect(mods)
+				f.Cleanup()
+				return nil
+			})
+
 			if len(f.Require) != len(mods) {
 				t.Errorf("after Cleanup, len(Require) = %v; want %v", len(f.Require), len(mods))
 			}
@@ -652,6 +1450,16 @@ func TestAddGo(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			testEdit(t, tt.in, tt.out, true, func(f *File) error {
 				return f.AddGoStmt(tt.version)
+			})
+		})
+	}
+}
+
+func TestAddExclude(t *testing.T) {
+	for _, tt := range addExcludeTests {
+		t.Run(tt.desc, func(t *testing.T) {
+			testEdit(t, tt.in, tt.out, true, func(f *File) error {
+				return f.AddExclude(tt.path, tt.version)
 			})
 		})
 	}
@@ -693,6 +1501,20 @@ func TestRetractRationale(t *testing.T) {
 			}
 			if got := f.Retract[0].Rationale; got != tt.want {
 				t.Errorf("got %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModuleDeprecated(t *testing.T) {
+	for _, tt := range moduleDeprecatedTests {
+		t.Run(tt.desc, func(t *testing.T) {
+			f, err := Parse("in", []byte(tt.in), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.Module.Deprecated != tt.want {
+				t.Errorf("got %q; want %q", f.Module.Deprecated, tt.want)
 			}
 		})
 	}
@@ -744,13 +1566,21 @@ func testEdit(t *testing.T, in, want string, strict bool, transform func(f *File
 
 func TestAddRetractValidateVersion(t *testing.T) {
 	for _, tt := range addRetractValidateVersionTests {
-		t.Run(tt.dsc, func(t *testing.T) {
-			f, err := Parse("in", []byte("module m"), nil)
-			if err != nil {
-				t.Fatal(err)
+		t.Run(tt.desc, func(t *testing.T) {
+			f := new(File)
+			if tt.path != "" {
+				if err := f.AddModuleStmt(tt.path); err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("module %s", AutoQuote(tt.path))
 			}
-			if err = f.AddRetract(VersionInterval{Low: tt.low, High: tt.high}, ""); err == nil {
-				t.Fatal("expected AddRetract to complain about version format")
+			interval := VersionInterval{Low: tt.low, High: tt.high}
+			if err := f.AddRetract(interval, ``); err == nil || err.Error() != tt.wantErr {
+				errStr := "<nil>"
+				if err != nil {
+					errStr = fmt.Sprintf("%#q", err)
+				}
+				t.Fatalf("f.AddRetract(%+v, ``) = %s\nwant %#q", interval, errStr, tt.wantErr)
 			}
 		})
 	}
@@ -758,13 +1588,51 @@ func TestAddRetractValidateVersion(t *testing.T) {
 
 func TestAddExcludeValidateVersion(t *testing.T) {
 	for _, tt := range addExcludeValidateVersionTests {
-		t.Run(tt.dsc, func(t *testing.T) {
+		t.Run(tt.desc, func(t *testing.T) {
 			f, err := Parse("in", []byte("module m"), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = f.AddExclude("aa", tt.ver); err == nil {
-				t.Fatal("expected AddExclude to complain about version format")
+			if err = f.AddExclude(tt.path, tt.version); err == nil || err.Error() != tt.wantErr {
+				errStr := "<nil>"
+				if err != nil {
+					errStr = fmt.Sprintf("%#q", err)
+				}
+				t.Fatalf("f.AddExclude(%q, %q) = %s\nwant %#q", tt.path, tt.version, errStr, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFixVersion(t *testing.T) {
+	for _, tt := range fixVersionTests {
+		t.Run(tt.desc, func(t *testing.T) {
+			inFile, err := Parse("in", []byte(tt.in), tt.fix)
+			if err != nil {
+				if tt.wantErr == "" {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if errMsg := err.Error(); !strings.Contains(errMsg, tt.wantErr) {
+					t.Fatalf("got error %q; want error containing %q", errMsg, tt.wantErr)
+				}
+				return
+			}
+			got, err := inFile.Format()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			outFile, err := Parse("out", []byte(tt.want), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := outFile.Format()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !bytes.Equal(got, want) {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 			}
 		})
 	}
