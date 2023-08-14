@@ -1,3 +1,29 @@
+golang-golang-x-mod (0.10.0-1) unstable; urgency=medium
+
+  * New upstream version 0.10.0
+
+ -- Anthony Fok <foka@debian.org>  Wed, 21 Jun 2023 17:29:46 -0600
+
+golang-golang-x-mod (0.9.0-1) unstable; urgency=medium
+
+  * New upstream version 0.9.0
+
+ -- Anthony Fok <foka@debian.org>  Mon, 19 Jun 2023 22:43:23 -0600
+
+golang-golang-x-mod (0.8.0-2) unstable; urgency=medium
+
+  * Fix typo in Build-Depends: golang-any (>= 1:1.17~) → (>= 2:1.17~)
+
+ -- Anthony Fok <foka@debian.org>  Wed, 14 Jun 2023 23:51:34 -0600
+
+golang-golang-x-mod (0.8.0-1) unstable; urgency=medium
+
+  * New upstream version 0.8.0
+  * Bump build-dependency golang-any (>= 2:1.17~) to match go.mod
+  * Add Lintian overrides for national-encoding warning in test files
+
+ -- Anthony Fok <foka@debian.org>  Wed, 14 Jun 2023 23:11:00 -0600
+
 golang-golang-x-mod (0.7.0-1) unstable; urgency=medium
 
   * Team upload.
