@@ -1,0 +1,4 @@
+# Test files of invalid UTF-8 mod path
+national-encoding [usr/share/gocode/src/golang.org/x/mod/zip/testdata/create/invalid_utf8_mod_path.txt]
+national-encoding [usr/share/gocode/src/golang.org/x/mod/zip/testdata/create_from_dir/invalid_utf8_mod_path.txt]
+national-encoding [usr/share/gocode/src/golang.org/x/mod/zip/testdata/unzip/invalid_utf8_mod_path.txt]
